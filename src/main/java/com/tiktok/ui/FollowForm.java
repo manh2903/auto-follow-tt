@@ -32,60 +32,27 @@ public class FollowForm extends JFrame {
         setSize(1000, 800);
         setLocationRelativeTo(null);
         deviceLogs = new ConcurrentHashMap<>();
-        initMenuBar();
         initComponents();
-    }
-
-    private void initMenuBar() {
-        JMenuBar menuBar = new JMenuBar();
-
-        // Menu File
-        JMenu fileMenu = new JMenu("File");
-        JMenuItem openMenuItem = new JMenuItem("Mở file danh sách");
-        openMenuItem.addActionListener(e -> openFile());
-        JMenuItem backMenuItem = new JMenuItem("Quay lại menu chính");
-        backMenuItem.addActionListener(e -> backToMainMenu());
-        JMenuItem exitMenuItem = new JMenuItem("Thoát");
-        exitMenuItem.addActionListener(e -> System.exit(0));
-        fileMenu.add(openMenuItem);
-        fileMenu.add(backMenuItem);
-        fileMenu.addSeparator();
-        fileMenu.add(exitMenuItem);
-
-        // Menu Tools
-        JMenu toolsMenu = new JMenu("Công cụ");
-        JMenuItem followMenuItem = new JMenuItem("Follow người dùng");
-        followMenuItem.addActionListener(e -> startFollowing());
-        toolsMenu.add(followMenuItem);
-
-        // Menu Help
-        JMenu helpMenu = new JMenu("Trợ giúp");
-        JMenuItem aboutMenuItem = new JMenuItem("Giới thiệu");
-        aboutMenuItem.addActionListener(e -> showAbout());
-        helpMenu.add(aboutMenuItem);
-
-        menuBar.add(fileMenu);
-        menuBar.add(toolsMenu);
-        menuBar.add(helpMenu);
-
-        setJMenuBar(menuBar);
     }
 
     private void openFile() {
         JFileChooser fileChooser = new JFileChooser();
+        fileChooser.setFileFilter(new javax.swing.filechooser.FileFilter() {
+            @Override
+            public boolean accept(java.io.File f) {
+                return f.isDirectory() || f.getName().toLowerCase().endsWith(".txt");
+            }
+
+            @Override
+            public String getDescription() {
+                return "Text Files (*.txt)";
+            }
+        });
+        
         int result = fileChooser.showOpenDialog(this);
         if (result == JFileChooser.APPROVE_OPTION) {
             filePathField.setText(fileChooser.getSelectedFile().getAbsolutePath());
         }
-    }
-
-    private void showAbout() {
-        JOptionPane.showMessageDialog(this,
-            "TikTok Automation Tool v1.0\n\n" +
-            "Công cụ tự động hóa cho TikTok\n" +
-            "Hỗ trợ follow người dùng trên nhiều thiết bị",
-            "Giới thiệu",
-            JOptionPane.INFORMATION_MESSAGE);
     }
 
     private void initComponents() {
@@ -96,9 +63,16 @@ public class FollowForm extends JFrame {
         // Panel điều khiển
         JPanel controlPanel = new JPanel(new GridLayout(4, 2, 5, 5));
         
-        controlPanel.add(new JLabel("Đường dẫn file:"));
+        // Panel chọn file
+        JPanel filePanel = new JPanel(new BorderLayout(5, 0));
+        filePanel.add(new JLabel("Đường dẫn file:"), BorderLayout.WEST);
         filePathField = new JTextField();
-        controlPanel.add(filePathField);
+        filePathField.setEditable(false);
+        JButton browseButton = new JButton("Chọn file");
+        browseButton.addActionListener(e -> openFile());
+        filePanel.add(filePathField, BorderLayout.CENTER);
+        filePanel.add(browseButton, BorderLayout.EAST);
+        controlPanel.add(filePanel);
 
         controlPanel.add(new JLabel("Thời gian delay (ms):"));
         delayField = new JTextField("2000");
