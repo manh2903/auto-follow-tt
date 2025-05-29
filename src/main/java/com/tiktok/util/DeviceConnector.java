@@ -338,10 +338,12 @@ public class DeviceConnector {
                 Runtime.getRuntime().exec("adb connect " + udid).waitFor();
                 Thread.sleep(3000);
             } else {
-                // Với USB device, kill và restart adb server
-                Runtime.getRuntime().exec("adb kill-server").waitFor();
+                // Với USB device, chỉ restart connection cho thiết bị cụ thể
+                Runtime.getRuntime().exec("adb -s " + udid + " usb").waitFor();
                 Thread.sleep(2000);
-                Runtime.getRuntime().exec("adb start-server").waitFor();
+                Runtime.getRuntime().exec("adb -s " + udid + " tcpip 5555").waitFor();
+                Thread.sleep(2000);
+                Runtime.getRuntime().exec("adb -s " + udid + " usb").waitFor();
                 Thread.sleep(3000);
             }
 
