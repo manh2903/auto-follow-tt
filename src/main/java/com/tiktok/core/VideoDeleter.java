@@ -153,20 +153,47 @@ public class VideoDeleter {
 
     private int getCurrentVideoViewCount() {
         try {
-            // Tìm element chứa view count với resource-id mới
-            List<WebElement> viewElements = driver.findElements(
-                    By.xpath("//android.widget.TextView[@resource-id='com.ss.android.ugc.trill:id/vb2']"));
+            // Danh sách các resource-id có thể chứa view count
+            String[] possibleResourceIds = {
+                "com.ss.android.ugc.trill:id/vb2",  // ID gốc
+                "com.ss.android.ugc.trill:id/v0s",  // ID mới
+                "com.ss.android.ugc.trill:id/tzo"   // ID cũ
+            };
 
-            if (viewElements.isEmpty()) {
-                log("❌ Không tìm thấy element view count");
-                return -1;
+            // Thử từng resource-id
+            for (String resourceId : possibleResourceIds) {
+                try {
+                    log("🔍 Thử tìm view count với resource-id: " + resourceId);
+                    List<WebElement> viewElements = driver.findElements(
+                            By.xpath("//android.widget.TextView[@resource-id='" + resourceId + "']"));
+
+                    if (!viewElements.isEmpty()) {
+                        String viewText = viewElements.get(0).getText();
+                        int viewCount = parseViewCount(viewText);
+                        log("📊 Đọc được view count: " + viewText + " -> " + viewCount + " (từ " + resourceId + ")");
+                        return viewCount;
+                    }
+                } catch (Exception e) {
+                    log("⚠️ Không tìm thấy view count với " + resourceId + ": " + e.getMessage());
+                }
             }
 
-            String viewText = viewElements.get(0).getText();
-            int viewCount = parseViewCount(viewText);
+            // Nếu không tìm thấy với resource-id cụ thể, thử tìm theo text pattern
+            log("🔍 Thử tìm view count theo text pattern");
+            List<WebElement> allTextViews = driver.findElements(By.className("android.widget.TextView"));
+            for (WebElement textView : allTextViews) {
+                try {
+                    String text = textView.getText();
+                    if (text != null && (text.contains("lượt xem") || text.contains("views") || text.matches(".*[0-9]+[KMB]?.*"))) {
+                        int viewCount = parseViewCount(text);
+                        log("📊 Đọc được view count từ text: " + text + " -> " + viewCount);
+                        return viewCount;
+                    }
+                } catch (Exception ignored) {}
+            }
 
-            log("📊 Đọc được view count: " + viewText + " -> " + viewCount);
-            return viewCount;
+            log("❌ Không tìm thấy element view count với bất kỳ phương pháp nào");
+            return -1;
 
         } catch (Exception e) {
             log("❌ Lỗi khi đọc view count: " + e.getMessage());
