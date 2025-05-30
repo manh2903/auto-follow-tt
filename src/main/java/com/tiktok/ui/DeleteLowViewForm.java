@@ -12,7 +12,8 @@ public class DeleteLowViewForm extends JFrame {
     private JButton startButton;
     private JButton backButton;
     private JComboBox<String> deviceComboBox;
-    private boolean isRunning = false;
+    private volatile boolean isRunning = false;
+    private volatile boolean shouldStop = false;
 
     public DeleteLowViewForm() {
         setTitle("Xóa Video View Thấp");
@@ -82,8 +83,8 @@ public class DeleteLowViewForm extends JFrame {
 
     private void startDeleting() {
         if (isRunning) {
-            isRunning = false;
-            startButton.setText("Bắt đầu");
+            shouldStop = true;
+            startButton.setText("Đang dừng...");
             return;
         }
 
@@ -109,6 +110,7 @@ public class DeleteLowViewForm extends JFrame {
             }
 
             isRunning = true;
+            shouldStop = false;
             startButton.setText("Dừng");
             logArea.setText("");
 
@@ -120,6 +122,7 @@ public class DeleteLowViewForm extends JFrame {
                     log("Lỗi: " + e.getMessage());
                 } finally {
                     isRunning = false;
+                    shouldStop = false;
                     SwingUtilities.invokeLater(() -> startButton.setText("Bắt đầu"));
                 }
             }).start();
@@ -143,13 +146,23 @@ public class DeleteLowViewForm extends JFrame {
             }
 
             // Sử dụng VideoDeleter để xóa video
-            VideoDeleter deleter = new VideoDeleter(connector.getDriver(), this::log);
+            VideoDeleter deleter = new VideoDeleter(connector.getDriver(), message -> {
+                if (shouldStop) {
+                    throw new RuntimeException("Người dùng đã yêu cầu dừng");
+                }
+                log(message);
+            });
+            
             deleter.deleteLowViewVideosOptimized(viewThreshold);
             
             log("Hoàn thành xử lý thiết bị " + deviceId);
 
         } catch (Exception e) {
-            log("Lỗi khi xử lý thiết bị " + deviceId + ": " + e.getMessage());
+            if (shouldStop) {
+                log("Đã dừng theo yêu cầu của người dùng");
+            } else {
+                log("Lỗi khi xử lý thiết bị " + deviceId + ": " + e.getMessage());
+            }
         } finally {
             connector.close();
         }
