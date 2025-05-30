@@ -92,12 +92,20 @@ public class DeviceConnector {
                 return;
             }
 
-            // Bước 3: Kiểm tra và mở TikTok nếu cần
-            if (!isTikTokRunning(udid)) {
-                log("TikTok chưa chạy, đang mở ứng dụng...");
-                openTikTok(udid);
+            // Bước 3: Kiểm tra TikTok một cách thông minh hơn
+            boolean tiktokInForeground = isTikTokInForeground(udid);
+            boolean tiktokRunning = !tiktokInForeground ? isTikTokRunning(udid) : true;
+
+            if (!tiktokInForeground) {
+                if (tiktokRunning) {
+                    log("TikTok đang chạy background, đưa về foreground...");
+                    bringTikTokToForeground(udid);
+                } else {
+                    log("TikTok chưa chạy, đang mở ứng dụng...");
+                    openTikTok(udid);
+                }
             } else {
-                log("TikTok đã đang chạy");
+                log("✅ TikTok đã ở foreground, không cần mở lại");
             }
 
             // Bước 4: Chuẩn bị kết nối
@@ -138,10 +146,10 @@ public class DeviceConnector {
                     String currentPackage = driver.getCurrentPackage();
                     log("Package hiện tại: " + currentPackage);
 
-                    // Đảm bảo TikTok đang được focus
+                    // Đảm bảo TikTok đang được focus (chỉ khi cần thiết)
                     if (!TIKTOK_PACKAGE.equals(currentPackage)) {
                         log("Đang chuyển focus về TikTok...");
-                        openTikTok(udid);
+                        bringTikTokToForeground(udid);
                         safeSleep(2000);
                     }
 
@@ -189,35 +197,136 @@ public class DeviceConnector {
         }
     }
 
-    private boolean isTikTokRunning(String udid) {
+    // Hàm kiểm tra nhanh TikTok có ở foreground không
+    private boolean isTikTokInForeground(String udid) {
         try {
-            // Kiểm tra xem TikTok có đang chạy không bằng cách lấy top activity
-            Process process = Runtime.getRuntime().exec("adb -s " + udid + " shell dumpsys activity activities | grep -E \"mCurrentFocus|mFocusedActivity\"");
+            log("Đang kiểm tra TikTok foreground...");
+
+            // Lệnh đơn giản và nhanh để kiểm tra app hiện tại
+            Process process = Runtime.getRuntime().exec("adb -s " + udid + " shell dumpsys window windows | grep -E 'mCurrentFocus'");
             process.waitFor();
 
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            String line;
+            String line = reader.readLine();
+
+            if (line != null && line.contains(TIKTOK_PACKAGE)) {
+                log("✅ TikTok đang ở foreground: " + line.trim());
+                return true;
+            }
+
+            // Kiểm tra thêm bằng focused activity
+            process = Runtime.getRuntime().exec("adb -s " + udid + " shell dumpsys activity activities | grep -E 'mCurrentFocus|mFocusedActivity'");
+            process.waitFor();
+
+            reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
             while ((line = reader.readLine()) != null) {
                 if (line.contains(TIKTOK_PACKAGE)) {
-                    log("TikTok đang chạy: " + line.trim());
+                    log("✅ TikTok có focused activity: " + line.trim());
                     return true;
                 }
             }
 
-            // Kiểm tra thêm bằng cách xem recent tasks
+            return false;
+        } catch (Exception e) {
+            log("Lỗi kiểm tra foreground: " + e.getMessage());
+            return false;
+        }
+    }
+
+    // Hàm kiểm tra chi tiết trạng thái TikTok
+    private boolean isTikTokRunning(String udid) {
+        try {
+            log("Đang kiểm tra trạng thái TikTok chi tiết...");
+
+            // Phương pháp 1: Kiểm tra running processes
+            Process process = Runtime.getRuntime().exec("adb -s " + udid + " shell ps | grep " + TIKTOK_PACKAGE);
+            process.waitFor();
+
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            String processLine = reader.readLine();
+
+            if (processLine != null && processLine.contains(TIKTOK_PACKAGE)) {
+                log("TikTok process đang chạy: " + processLine.trim());
+
+                // Kiểm tra xem có phải là background process không
+                if (processLine.contains("S") || processLine.contains("R")) {
+                    // Kiểm tra thêm bằng cách xem package có trong activity stack không
+                    process = Runtime.getRuntime().exec("adb -s " + udid + " shell dumpsys activity activities | grep -A 20 'Running activities'");
+                    process.waitFor();
+
+                    reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        if (line.contains(TIKTOK_PACKAGE)) {
+                            if (line.contains("state=RESUMED")) {
+                                log("✅ TikTok trong RESUMED state");
+                                return true;
+                            } else if (line.contains("state=PAUSED") || line.contains("state=STOPPED")) {
+                                log("TikTok đang chạy nhưng ở background (PAUSED/STOPPED)");
+                                return true; // Vẫn coi là đang chạy
+                            }
+                        }
+                    }
+
+                    log("TikTok đang chạy background");
+                    return true;
+                }
+            }
+
+            // Phương pháp 2: Kiểm tra recent tasks
             process = Runtime.getRuntime().exec("adb -s " + udid + " shell dumpsys activity recents | grep " + TIKTOK_PACKAGE);
             process.waitFor();
             reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
             String recentTask = reader.readLine();
 
             if (recentTask != null && recentTask.contains(TIKTOK_PACKAGE)) {
-                log("TikTok có trong recent tasks");
-                return false; // Có trong recent nhưng chưa chắc đang active
+                log("TikTok có trong recent tasks nhưng có thể không active");
+                return false; // Có trong recent nhưng chưa chắc đang chạy
             }
 
+            log("❌ TikTok không đang chạy");
             return false;
+
         } catch (Exception e) {
-            log("Lỗi khi kiểm tra trạng thái TikTok: " + e.getMessage());
+            log("❌ Lỗi khi kiểm tra trạng thái TikTok: " + e.getMessage());
+            return false;
+        }
+    }
+
+    // Hàm mới để đưa TikTok về foreground thay vì mở lại
+    private boolean bringTikTokToForeground(String udid) {
+        try {
+            log("Đang đưa TikTok về foreground...");
+
+            // Sử dụng intent để đưa app về foreground (không restart)
+            String command = "adb -s " + udid + " shell am start -S -n " + TIKTOK_PACKAGE + "/" + TIKTOK_MAIN_ACTIVITY;
+            Process process = Runtime.getRuntime().exec(command);
+            int exitCode = process.waitFor();
+
+            if (exitCode == 0) {
+                log("✅ Đã gửi lệnh đưa TikTok về foreground");
+                safeSleep(2000); // Đợi ngắn hơn vì app đã chạy rồi
+
+                // Kiểm tra xem đã về foreground chưa
+                if (isTikTokInForeground(udid)) {
+                    log("✅ TikTok đã được đưa về foreground thành công");
+                    return true;
+                } else {
+                    log("⚠️ TikTok chưa về foreground, thử lại...");
+                }
+            }
+
+            // Fallback: thử mở bằng cách khác
+            log("Thử đưa về foreground bằng launcher intent...");
+            command = "adb -s " + udid + " shell am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n " + TIKTOK_PACKAGE + "/" + TIKTOK_MAIN_ACTIVITY;
+            process = Runtime.getRuntime().exec(command);
+            process.waitFor();
+            safeSleep(2000);
+
+            return isTikTokInForeground(udid);
+
+        } catch (Exception e) {
+            log("❌ Lỗi khi đưa TikTok về foreground: " + e.getMessage());
             return false;
         }
     }
@@ -238,12 +347,12 @@ public class DeviceConnector {
                 safeSleep(5000);
 
                 // Kiểm tra xem TikTok đã mở chưa
-                boolean isOpened = isTikTokRunning(udid);
+                boolean isOpened = isTikTokInForeground(udid);
                 if (isOpened) {
                     log("✅ TikTok đã được mở thành công");
                     return true;
                 } else {
-                    log("⚠️ TikTok đã được gửi lệnh mở nhưng chưa chắc đã hoạt động");
+                    log("⚠️ TikTok đã được gửi lệnh mở nhưng chưa ở foreground");
 
                     // Thử lệnh khác với splash activity
                     log("Thử mở bằng splash activity...");
@@ -252,7 +361,7 @@ public class DeviceConnector {
                     process.waitFor();
                     safeSleep(3000);
 
-                    return true; // Trả về true vì đã gửi lệnh
+                    return isTikTokInForeground(udid);
                 }
             } else {
                 // Đọc error output
@@ -276,7 +385,7 @@ public class DeviceConnector {
     private synchronized int getSystemPortForDevice(String udid) {
         if (!DEVICE_PORTS.containsKey(udid)) {
             DEVICE_PORTS.put(udid, nextPort++);
-            log("Gán port " + (nextPort-1) + " cho thiết bị " + udid);
+            log("Gán port " + (nextPort - 1) + " cho thiết bị " + udid);
         }
         return DEVICE_PORTS.get(udid);
     }

@@ -2,6 +2,7 @@ package com.tiktok.ui;
 
 import javax.swing.*;
 import java.awt.*;
+import java.net.URL;
 
 public class MainMenu extends JFrame {
     public MainMenu() {
@@ -25,14 +26,15 @@ public class MainMenu extends JFrame {
         mainPanel.add(headerPanel, BorderLayout.NORTH);
 
         // Panel chứa các nút chức năng
-        JPanel buttonPanel = new JPanel(new GridLayout(4, 1, 10, 10));
+        JPanel buttonPanel = new JPanel(new GridLayout(5, 1, 10, 10));
         buttonPanel.setBorder(BorderFactory.createEmptyBorder(20, 0, 20, 0));
 
-        // Tạo các nút chức năng
-        JButton followButton = createMenuButton("Follow người dùng", "👥");
-        JButton likeButton = createMenuButton("Like video", "❤️");
-        JButton commentButton = createMenuButton("Comment video", "💬");
-        JButton exitButton = createMenuButton("Thoát", "🚪");
+        // Tạo các nút chức năng với ký tự unicode
+        JButton followButton = createMenuButton("👤 Follow người dùng");
+        JButton likeButton = createMenuButton("♥ Like video");
+        JButton commentButton = createMenuButton("💬 Comment video");
+        JButton deleteLowViewButton = createMenuButton("🗑 Xóa video view thấp");
+        JButton exitButton = createMenuButton("⏻ Thoát");
 
         // Thêm sự kiện cho các nút
         followButton.addActionListener(e -> {
@@ -50,12 +52,18 @@ public class MainMenu extends JFrame {
                 "Thông báo", JOptionPane.INFORMATION_MESSAGE);
         });
 
+        deleteLowViewButton.addActionListener(e -> {
+            new DeleteLowViewForm().setVisible(true);
+            this.dispose();
+        });
+
         exitButton.addActionListener(e -> System.exit(0));
 
         // Thêm các nút vào panel
         buttonPanel.add(followButton);
         buttonPanel.add(likeButton);
         buttonPanel.add(commentButton);
+        buttonPanel.add(deleteLowViewButton);
         buttonPanel.add(exitButton);
 
         mainPanel.add(buttonPanel, BorderLayout.CENTER);
@@ -69,8 +77,8 @@ public class MainMenu extends JFrame {
         add(mainPanel);
     }
 
-    private JButton createMenuButton(String text, String icon) {
-        JButton button = new JButton(icon + "  " + text);
+    private JButton createMenuButton(String text) {
+        JButton button = new JButton(text);
         button.setFont(new Font("Arial", Font.PLAIN, 16));
         button.setFocusPainted(false);
         button.setBackground(new Color(0, 122, 255));
