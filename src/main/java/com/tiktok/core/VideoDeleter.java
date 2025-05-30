@@ -14,12 +14,20 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 
 public class VideoDeleter {
     private final AndroidDriver driver;
     private final LogCallback logCallback;
     private final WebDriverWait wait;
     private static final Pattern VIEW_COUNT_PATTERN = Pattern.compile("(\\d+(?:[.,]\\d+)?[KMB]?)");
+    
+    // Bộ nhớ để theo dõi video đã xử lý
+    private final Set<String> processedVideoIds = new HashSet<>();
+    private String lastVideoIdentifier = null;
+    private int sameVideoCount = 0;
+    private static final int MAX_SAME_VIDEO_COUNT = 3; // Cho phép 3 lần gặp video giống nhau
 
     public VideoDeleter(AndroidDriver driver, LogCallback logCallback) {
         this.driver = driver;
@@ -30,6 +38,11 @@ public class VideoDeleter {
     public void deleteLowViewVideos(int viewThreshold) {
         try {
             log("🚀 Bắt đầu xóa video với ngưỡng: " + viewThreshold + " view");
+            
+            // Reset tracking variables
+            processedVideoIds.clear();
+            lastVideoIdentifier = null;
+            sameVideoCount = 0;
 
             // Mở profile
             openProfile();
@@ -43,16 +56,35 @@ public class VideoDeleter {
             int deletedCount = 0;
             int processedCount = 0;
             int consecutiveErrors = 0;
-            final int MAX_CONSECUTIVE_ERRORS = 5;
-            final int MAX_PROCESSED_VIDEOS = 50; // Giới hạn để tránh vòng lặp vô tận
+            final int MAX_CONSECUTIVE_ERRORS = 3; // Giảm xuống 3 để phát hiện hết video nhanh hơn
+            final int MAX_NO_NEW_VIDEO_COUNT = 5; // Số lần tối đa không có video mới
 
-            while (processedCount < MAX_PROCESSED_VIDEOS && consecutiveErrors < MAX_CONSECUTIVE_ERRORS) {
+            while (consecutiveErrors < MAX_CONSECUTIVE_ERRORS) {
                 try {
                     processedCount++;
                     log("🔍 Kiểm tra video thứ " + processedCount);
 
                     // Đợi video load
                     Thread.sleep(2000);
+
+                    // Lấy identifier của video hiện tại
+                    String currentVideoId = getCurrentVideoIdentifier();
+                    
+                    // Kiểm tra xem có phải video mới không
+                    if (!isNewVideo(currentVideoId)) {
+                        log("⚠️ Đã gặp video này trước đó hoặc hết video, có thể đã hết danh sách");
+                        if (sameVideoCount >= MAX_SAME_VIDEO_COUNT) {
+                            log("🏁 Đã hết video trong danh sách!");
+                            break;
+                        }
+                        swipeToNextVideo();
+                        continue;
+                    }
+
+                    // Đánh dấu video đã xử lý
+                    processedVideoIds.add(currentVideoId);
+                    lastVideoIdentifier = currentVideoId;
+                    sameVideoCount = 0; // Reset counter
 
                     // Kiểm tra lượng view của video hiện tại
                     int currentViewCount = getCurrentVideoViewCount();
@@ -75,9 +107,15 @@ public class VideoDeleter {
                             consecutiveErrors = 0; // Reset counter khi thành công
                             log("✅ Đã xóa video thành công! Tổng đã xóa: " + deletedCount);
 
-                            // Sau khi xóa, đợi 2s để video tiếp theo tự động load
+                            // Sau khi xóa, video tiếp theo sẽ tự động load
                             Thread.sleep(2000);
                             log("⏳ Đang đợi video tiếp theo tự động load...");
+                            
+                            // Kiểm tra xem có còn video không sau khi xóa
+                            if (!hasMoreVideos()) {
+                                log("🏁 Không còn video nào sau khi xóa!");
+                                break;
+                            }
                         } else {
                             log("❌ Xóa video thất bại, chuyển video tiếp theo");
                             swipeToNextVideo();
@@ -86,7 +124,10 @@ public class VideoDeleter {
                     } else {
                         // View cao hơn ngưỡng, vuốt lên để load video tiếp theo
                         log("📈 Video có view cao, chuyển sang video tiếp theo");
-                        swipeToNextVideo();
+                        if (!swipeToNextVideoWithValidation()) {
+                            log("🏁 Không thể chuyển đến video tiếp theo, có thể đã hết danh sách!");
+                            break;
+                        }
                         consecutiveErrors = 0; // Reset khi thành công
                     }
 
@@ -96,9 +137,13 @@ public class VideoDeleter {
 
                     // Thử chuyển video tiếp theo
                     try {
-                        swipeToNextVideo();
+                        if (!swipeToNextVideoWithValidation()) {
+                            log("🏁 Không thể chuyển video tiếp theo, kết thúc!");
+                            break;
+                        }
                     } catch (Exception swipeError) {
                         log("❌ Không thể chuyển video tiếp theo: " + swipeError.getMessage());
+                        consecutiveErrors++;
                     }
                 }
             }
@@ -107,14 +152,197 @@ public class VideoDeleter {
                 log("⚠️ Dừng do quá nhiều lỗi liên tiếp (" + consecutiveErrors + " lỗi)");
             }
 
-            if (processedCount >= MAX_PROCESSED_VIDEOS) {
-                log("⚠️ Đã xử lý tối đa " + MAX_PROCESSED_VIDEOS + " video");
-            }
-
             log("🎉 Hoàn thành! Đã kiểm tra " + processedCount + " video, xóa " + deletedCount + " video có view thấp");
 
         } catch (Exception e) {
             log("❌ Lỗi tổng quát: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Lấy identifier duy nhất của video hiện tại
+     */
+    private String getCurrentVideoIdentifier() {
+        try {
+            // Thử lấy từ nhiều nguồn để tạo identifier duy nhất
+            StringBuilder identifier = new StringBuilder();
+            
+            // 1. Thử lấy từ view count text
+            String viewText = getCurrentVideoViewText();
+            if (viewText != null && !viewText.isEmpty()) {
+                identifier.append("view:").append(viewText).append(";");
+            }
+            
+            // 2. Thử lấy từ tên tác giả hoặc username
+            String author = getCurrentVideoAuthor();
+            if (author != null && !author.isEmpty()) {
+                identifier.append("author:").append(author).append(";");
+            }
+            
+            // 3. Thử lấy từ mô tả video (một phần)
+            String description = getCurrentVideoDescription();
+            if (description != null && !description.isEmpty()) {
+                // Chỉ lấy 20 ký tự đầu để tránh quá dài
+                String shortDesc = description.length() > 20 ? description.substring(0, 20) : description;
+                identifier.append("desc:").append(shortDesc).append(";");
+            }
+            
+            // 4. Nếu không có gì, sử dụng timestamp + random
+            if (identifier.length() == 0) {
+                identifier.append("time:").append(System.currentTimeMillis());
+            }
+            
+            return identifier.toString();
+            
+        } catch (Exception e) {
+            log("❌ Lỗi khi lấy video identifier: " + e.getMessage());
+            return "unknown:" + System.currentTimeMillis();
+        }
+    }
+
+    /**
+     * Kiểm tra xem có phải video mới không
+     */
+    private boolean isNewVideo(String videoId) {
+        if (videoId == null || videoId.equals(lastVideoIdentifier)) {
+            sameVideoCount++;
+            return false;
+        }
+        
+        if (processedVideoIds.contains(videoId)) {
+            sameVideoCount++;
+            return false;
+        }
+        
+        return true;
+    }
+
+    /**
+     * Lấy text của view count (không parse)
+     */
+    private String getCurrentVideoViewText() {
+        try {
+            String[] possibleResourceIds = {
+                    "com.ss.android.ugc.trill:id/vb2",
+                    "com.ss.android.ugc.trill:id/v0s",
+                    "com.ss.android.ugc.trill:id/tzo"
+            };
+
+            for (String resourceId : possibleResourceIds) {
+                try {
+                    List<WebElement> viewElements = driver.findElements(
+                            By.xpath("//android.widget.TextView[@resource-id='" + resourceId + "']"));
+                    if (!viewElements.isEmpty()) {
+                        return viewElements.get(0).getText();
+                    }
+                } catch (Exception ignored) {}
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Lấy tên tác giả video
+     */
+    private String getCurrentVideoAuthor() {
+        try {
+            // Thử các cách khác nhau để lấy tên tác giả
+            String[] authorSelectors = {
+                    "//android.widget.TextView[contains(@text, '@')]",
+                    "//android.widget.TextView[@resource-id='com.ss.android.ugc.trill:id/title']",
+                    "//android.widget.TextView[contains(@resource-id, 'author')]"
+            };
+            
+            for (String selector : authorSelectors) {
+                try {
+                    List<WebElement> elements = driver.findElements(By.xpath(selector));
+                    if (!elements.isEmpty()) {
+                        String text = elements.get(0).getText();
+                        if (text != null && !text.trim().isEmpty()) {
+                            return text.trim();
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Lấy mô tả video
+     */
+    private String getCurrentVideoDescription() {
+        try {
+            List<WebElement> descElements = driver.findElements(
+                    By.xpath("//android.widget.TextView[contains(@resource-id, 'desc') or contains(@resource-id, 'caption')]"));
+            
+            if (!descElements.isEmpty()) {
+                String desc = descElements.get(0).getText();
+                return desc != null ? desc.trim() : null;
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Kiểm tra xem còn có video nào không
+     */
+    private boolean hasMoreVideos() {
+        try {
+            // Kiểm tra xem có video player không
+            List<WebElement> videoPlayers = driver.findElements(
+                    By.xpath("//android.view.ViewGroup[contains(@resource-id, 'video')]"));
+            
+            if (videoPlayers.isEmpty()) {
+                return false;
+            }
+            
+            // Kiểm tra xem có nút play hay loading indicator không
+            List<WebElement> playButtons = driver.findElements(
+                    By.xpath("//android.widget.ImageView[contains(@resource-id, 'play')]"));
+            
+            List<WebElement> loadingIndicators = driver.findElements(
+                    By.xpath("//android.widget.ProgressBar"));
+            
+            return !playButtons.isEmpty() || !loadingIndicators.isEmpty() || !videoPlayers.isEmpty();
+            
+        } catch (Exception e) {
+            log("❌ Lỗi khi kiểm tra có còn video không: " + e.getMessage());
+            return true; // Mặc định là còn video để tiếp tục
+        }
+    }
+
+    /**
+     * Vuốt đến video tiếp theo với validation
+     */
+    private boolean swipeToNextVideoWithValidation() {
+        try {
+            String beforeSwipeId = getCurrentVideoIdentifier();
+            
+            swipeToNextVideo();
+            
+            // Đợi video mới load
+            Thread.sleep(2000);
+            
+            String afterSwipeId = getCurrentVideoIdentifier();
+            
+            // Kiểm tra xem có chuyển được video mới không
+            if (beforeSwipeId.equals(afterSwipeId)) {
+                log("⚠️ Video không thay đổi sau khi vuốt, có thể đã hết danh sách");
+                return false;
+            }
+            
+            return true;
+            
+        } catch (Exception e) {
+            log("❌ Lỗi khi vuốt với validation: " + e.getMessage());
+            return false;
         }
     }
 
@@ -153,14 +381,12 @@ public class VideoDeleter {
 
     private int getCurrentVideoViewCount() {
         try {
-            // Danh sách các resource-id có thể chứa view count
             String[] possibleResourceIds = {
-                "com.ss.android.ugc.trill:id/vb2",  // ID gốc
-                "com.ss.android.ugc.trill:id/v0s",  // ID mới
-                "com.ss.android.ugc.trill:id/tzo"   // ID cũ
+                    "com.ss.android.ugc.trill:id/vb2",
+                    "com.ss.android.ugc.trill:id/v0s",
+                    "com.ss.android.ugc.trill:id/tzo"
             };
 
-            // Thử từng resource-id
             for (String resourceId : possibleResourceIds) {
                 try {
                     log("🔍 Thử tìm view count với resource-id: " + resourceId);
@@ -178,7 +404,6 @@ public class VideoDeleter {
                 }
             }
 
-            // Nếu không tìm thấy với resource-id cụ thể, thử tìm theo text pattern
             log("🔍 Thử tìm view count theo text pattern");
             List<WebElement> allTextViews = driver.findElements(By.className("android.widget.TextView"));
             for (WebElement textView : allTextViews) {
@@ -205,13 +430,11 @@ public class VideoDeleter {
         try {
             log("🗑️ Bắt đầu xóa video hiện tại");
 
-            // Tìm và click nút menu (...)
             if (!clickMenuButton()) {
                 log("❌ Không thể mở menu");
                 return false;
             }
 
-            // Click delete button
             if (!clickDeleteButton()) {
                 log("❌ Không thể click nút xóa");
                 return false;
@@ -234,8 +457,8 @@ public class VideoDeleter {
             int screenWidth = driver.manage().window().getSize().getWidth();
 
             int startX = screenWidth / 2;
-            int startY = (int) (screenHeight * 0.8); // Bắt đầu từ 80% màn hình
-            int endY = (int) (screenHeight * 0.2);   // Kết thúc ở 20% màn hình
+            int startY = (int) (screenHeight * 0.8);
+            int endY = (int) (screenHeight * 0.2);
 
             PointerInput finger = new PointerInput(PointerInput.Kind.TOUCH, "finger");
             Sequence swipe = new Sequence(finger, 1);
@@ -249,7 +472,6 @@ public class VideoDeleter {
 
             driver.perform(Arrays.asList(swipe));
 
-            // Đợi video mới load
             Thread.sleep(1500);
             log("✅ Đã vuốt lên video tiếp theo");
 
@@ -261,14 +483,11 @@ public class VideoDeleter {
 
     private void openProfile() throws InterruptedException {
         try {
-            // Click vào tab Profile
             WebElement profileTab = wait.until(ExpectedConditions.elementToBeClickable(
                     By.xpath("//android.widget.FrameLayout[@content-desc='Hồ sơ']/android.widget.ImageView")));
             profileTab.click();
 
-            // Đợi profile load xong
             Thread.sleep(3000);
-
             log("✅ Đã mở profile thành công");
         } catch (Exception e) {
             log("❌ Không thể mở profile: " + e.getMessage());
@@ -282,7 +501,6 @@ public class VideoDeleter {
             try {
                 log("🔄 Thử tìm nút menu (lần " + attempt + "/" + maxAttempts + ")");
 
-                // Phương pháp 1: Tìm bằng ID chính xác
                 WebElement menuButton = wait.until(ExpectedConditions.elementToBeClickable(
                         By.xpath("//android.widget.ImageView[@resource-id='com.ss.android.ugc.trill:id/q3a']")));
                 menuButton.click();
@@ -294,7 +512,6 @@ public class VideoDeleter {
                 log("❌ Phương pháp 1 thất bại: " + e.getMessage());
 
                 try {
-                    // Phương pháp 2: Tìm trong frame
                     WebElement frame = driver.findElement(
                             By.xpath("//android.widget.FrameLayout[@resource-id='com.ss.android.ugc.trill:id/t7r']"));
                     WebElement menuButton = frame.findElement(By.xpath(".//android.widget.ImageView"));
@@ -307,7 +524,7 @@ public class VideoDeleter {
 
                     if (attempt < maxAttempts) {
                         try {
-                            Thread.sleep(2000); // Đợi lâu hơn
+                            Thread.sleep(2000);
                         } catch (InterruptedException ignored) {}
                     }
                 }
@@ -318,17 +535,14 @@ public class VideoDeleter {
 
     private boolean clickDeleteButton() {
         try {
-            // Đợi menu mở
             Thread.sleep(1000);
             log("⏳ Đã đợi menu mở");
 
-            // Tìm RecyclerView với timeout dài hơn
             WebElement recyclerView = wait.until(ExpectedConditions.presenceOfElementLocated(
                     By.xpath("//androidx.recyclerview.widget.RecyclerView[@resource-id='com.ss.android.ugc.trill:id/v3']")));
 
             log("✅ Tìm thấy RecyclerView, bắt đầu scroll");
 
-            // Thực hiện scroll để tìm nút xóa
             boolean scrollResult = performHorizontalScrollToFindDelete(recyclerView);
 
             if (!scrollResult) {
@@ -336,18 +550,30 @@ public class VideoDeleter {
                 return false;
             }
 
-            // Tìm và click nút xóa
             WebElement deleteButton = wait.until(ExpectedConditions.elementToBeClickable(
                     By.xpath("//android.widget.Button[@content-desc='Xóa']")));
             deleteButton.click();
             log("✅ Đã click nút xóa");
 
-            // Đợi và click confirm
-            Thread.sleep(2000);
-            WebElement confirmButton = wait.until(ExpectedConditions.elementToBeClickable(
-                    By.xpath("//android.view.ViewGroup[@resource-id='com.ss.android.ugc.trill:id/e1t']")));
-            confirmButton.click();
-            log("✅ Đã click confirm xóa");
+            Thread.sleep(500);
+            try {
+                WebElement confirmButton = wait.until(ExpectedConditions.elementToBeClickable(
+                        By.xpath("//android.widget.Button[@content-desc='Xóa']")));
+                confirmButton.click();
+                log("✅ Đã click xác nhận xóa (theo resource-id)");
+            } catch (Exception e) {
+                log("⚠️ Không tìm thấy nút xác nhận theo resource-id, thử theo content-desc");
+
+                try {
+                    WebElement confirmButton = wait.until(ExpectedConditions.elementToBeClickable(
+                            By.xpath("//android.view.ViewGroup[@resource-id='com.ss.android.ugc.trill:id/e1t']")));
+                    confirmButton.click();
+                    log("✅ Đã click xác nhận xóa (theo content-desc)");
+                } catch (Exception e2) {
+                    log("❌ Không thể tìm thấy nút xác nhận xóa");
+                    return false;
+                }
+            }
 
             return true;
 
@@ -377,9 +603,8 @@ public class VideoDeleter {
 
                 try {
                     scrollWithW3CActions(startX, y, endX, y);
-                    Thread.sleep(1500); // Đợi animation
+                    Thread.sleep(1500);
 
-                    // Kiểm tra nút Xóa
                     List<WebElement> deleteButtons = driver.findElements(
                             By.xpath("//android.widget.Button[@content-desc='Xóa']"));
 
@@ -396,7 +621,6 @@ public class VideoDeleter {
                 }
             }
 
-            // Thử scroll với khoảng cách lớn hơn
             log("🔄 Thử scroll cuối cùng với khoảng cách lớn hơn");
             try {
                 scrollWithW3CActions(elementX + elementWidth - 20, y, elementX + 20, y);
@@ -449,12 +673,10 @@ public class VideoDeleter {
 
             viewText = viewText.trim().toLowerCase();
 
-            // Số thuần
             if (viewText.matches("\\d+")) {
                 return Integer.parseInt(viewText);
             }
 
-            // Pattern với K, M, B
             Matcher matcher = VIEW_COUNT_PATTERN.matcher(viewText);
             if (matcher.find()) {
                 String count = matcher.group(1);
@@ -471,7 +693,6 @@ public class VideoDeleter {
                 }
             }
 
-            // Fallback: số đầu tiên
             Pattern numberPattern = Pattern.compile("(\\d+)");
             Matcher numberMatcher = numberPattern.matcher(viewText);
             if (numberMatcher.find()) {
@@ -487,7 +708,6 @@ public class VideoDeleter {
     }
 
     public void deleteLowViewVideosOptimized(int viewThreshold) {
-        // Method này giờ chỉ gọi method chính vì logic đã được tối ưu
         deleteLowViewVideos(viewThreshold);
     }
 
